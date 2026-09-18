@@ -21,124 +21,117 @@ canvas,video{width:100%;display:block;background:#eef0f3}.route{font-size:28px;f
 <label class="upload">Upload image or short video<input id="file" type="file" accept="image/*,video/mp4,video/webm"></label>
 
 <div class="grid">
-<div class="card"><div class="head">Input frame</div><canvas id="input" width="640" height="400"></canvas></div>
-<div class="card"><div class="head">Routing preview</div><div class="body">
+<div class="card"><div class="head">Input frame</div><canvas id="input" width="592" height="336"></canvas></div>
+<div class="card"><div class="head">Detection preview</div><div class="body">
 <div class="muted">Estimated branch from brightness/value statistics</div>
 <div id="route" class="route">—</div>
-<div id="stats" class="muted">Choose an image, a short video, or the sample clip below.</div>
-<canvas id="processed" width="640" height="330" style="margin-top:12px"></canvas>
+<div id="stats" class="muted">Choose a local video or use the sample clip below.</div>
+<canvas id="processed" width="592" height="336" style="margin-top:12px"></canvas>
 </div></div>
 </div>
 
 <div class="flow">
-<div class="step"><b>1. Scene routing</b>HSV/value-channel statistics decide whether the frame follows the daytime or nighttime branch.</div>
-<div class="step"><b>2. Daytime branch</b>GMM foreground detection, morphology, connected regions, and bounding-box filtering.</div>
-<div class="step"><b>3. Nighttime branch</b>Thresholding, morphological opening, and bright-component analysis.</div>
-<div class="step"><b>4. Vehicle logic</b>Region/headlight components are filtered and counted inside the region of interest.</div>
+<div class="step"><b>1. Scene routing</b>Brightness/value statistics choose the daytime or nighttime path.</div>
+<div class="step"><b>2. Daytime preview</b>Motion foreground regions are extracted against a slowly updated background model.</div>
+<div class="step"><b>3. Nighttime preview</b>Bright components are isolated to approximate the original headlight-oriented branch.</div>
+<div class="step"><b>4. Vehicle regions</b>Connected regions are filtered and displayed as candidate vehicle boxes inside the road ROI.</div>
 </div>
 
-<div class="muted" style="margin-top:16px">This lightweight browser page visualizes the day/night routing and thresholding stages. The full GMM/morphology/component vehicle-detection pipeline remains in the linked MATLAB source.</div>
+<div class="muted" style="margin-top:16px">The browser preview is a lightweight client-side approximation for live presentation. The original MATLAB source contains the full GMM/morphology/component pipeline.</div>
 
 <div class="sample">
 <h2>Sample clip</h2>
-<div class="muted" style="margin-bottom:10px">Optional test footage from the original project material. It is not loaded into the processing preview until you choose to use it.</div>
+<div class="muted" style="margin-bottom:10px">Optional short sample from the original project footage. It is not used by the detector until you choose it.</div>
 <div class="sample-grid">
-<video id="sample" controls playsinline preload="metadata" src="./assets/sample-vehicle.mp4"></video>
+<video id="sample" controls playsinline preload="metadata" src="./assets/sample-vehicle.mp4?v=4"></video>
 <div class="sample-actions">
-<button id="useSample" class="button primary">Use this sample in preview</button>
-<div class="muted">You can also upload your own local image or short video above. Files stay in your browser and are not uploaded to a server.</div>
+<button id="useSample" class="button primary">Use this sample in detector</button>
+<div class="muted">You can also upload your own image or short video above. Local files stay in your browser and are not sent to a server.</div>
 </div>
 </div>
 </div>
 </section>
 <video id="worker" muted loop playsinline preload="auto" style="display:none"></video>
+<canvas id="work" width="296" height="168" style="display:none"></canvas>
 </main>
 
 <script>
-const file=document.getElementById("file");
-const sample=document.getElementById("sample");
-const worker=document.getElementById("worker");
-const cin=document.getElementById("input"),cout=document.getElementById("processed");
-const a=cin.getContext("2d",{willReadFrequently:true}),b=cout.getContext("2d");
-let activeURL=null,runToken=0,timer=null;
+const file=document.getElementById("file"),sample=document.getElementById("sample"),worker=document.getElementById("worker");
+const cin=document.getElementById("input"),cout=document.getElementById("processed"),work=document.getElementById("work");
+const a=cin.getContext("2d"),b=cout.getContext("2d"),wctx=work.getContext("2d",{willReadFrequently:true});
+let activeURL=null,runToken=0,timer=null,bg=null,frameNo=0;
 
-function stopRun(){
-  runToken++;
-  if(timer){clearTimeout(timer);timer=null}
-  worker.pause();
+function stopRun(){runToken++;if(timer){clearTimeout(timer);timer=null}worker.pause();bg=null;frameNo=0}
+function sceneStats(data){
+  const hist=new Uint32Array(256);let sum=0,count=0;
+  for(let i=0;i<data.length;i+=16){const v=Math.max(data[i],data[i+1],data[i+2]);hist[v]++;sum+=v;count++}
+  let peak=0;for(let i=1;i<256;i++)if(hist[i]>hist[peak])peak=i;
+  return {peak,mean:sum/Math.max(1,count),night:peak<=30};
 }
-
-function processSource(src,sw,sh){
+function grayData(data){
+  const g=new Uint8Array(data.length/4);
+  for(let p=0,i=0;i<data.length;i+=4,p++)g[p]=(0.299*data[i]+0.587*data[i+1]+0.114*data[i+2])|0;
+  return g;
+}
+function connectedBoxes(mask,gw,gh,cell,scaleX,scaleY,minCells){
+  const seen=new Uint8Array(mask.length),boxes=[];
+  const stackX=new Int16Array(mask.length),stackY=new Int16Array(mask.length);
+  for(let y=0;y<gh;y++)for(let x=0;x<gw;x++){
+    const idx=y*gw+x;if(!mask[idx]||seen[idx])continue;
+    let top=0;stackX[top]=x;stackY[top]=y;top++;seen[idx]=1;
+    let minX=x,maxX=x,minY=y,maxY=y,n=0;
+    while(top){top--;const cx=stackX[top],cy=stackY[top];n++;if(cx<minX)minX=cx;if(cx>maxX)maxX=cx;if(cy<minY)minY=cy;if(cy>maxY)maxY=cy;
+      const ns=[[cx-1,cy],[cx+1,cy],[cx,cy-1],[cx,cy+1]];
+      for(const [nx,ny] of ns){if(nx<0||ny<0||nx>=gw||ny>=gh)continue;const ni=ny*gw+nx;if(mask[ni]&&!seen[ni]){seen[ni]=1;stackX[top]=nx;stackY[top]=ny;top++}}
+    }
+    if(n>=minCells){boxes.push({x:minX*cell*scaleX,y:minY*cell*scaleY,w:(maxX-minX+1)*cell*scaleX,h:(maxY-minY+1)*cell*scaleY,cells:n})}
+  }
+  return boxes;
+}
+function detectFrame(src,sw,sh){
   if(!sw||!sh)return;
-  const w=640;
-  const h=Math.max(240,Math.round(w*sh/sw));
-  cin.width=w;cin.height=h;cout.width=w;cout.height=h;
-  a.drawImage(src,0,0,w,h);
-
-  const d=a.getImageData(0,0,w,h),hist=new Uint32Array(256);
-  let sum=0,count=0;
-  for(let i=0;i<d.data.length;i+=16){
-    const v=Math.max(d.data[i],d.data[i+1],d.data[i+2]);
-    hist[v]++;sum+=v;count++;
+  const W=592,H=Math.round(W*sh/sw),DW=296,DH=Math.round(DW*sh/sw);
+  cin.width=W;cin.height=H;cout.width=W;cout.height=H;work.width=DW;work.height=DH;
+  a.drawImage(src,0,0,W,H);b.drawImage(src,0,0,W,H);wctx.drawImage(src,0,0,DW,DH);
+  const pix=wctx.getImageData(0,0,DW,DH).data,stats=sceneStats(pix),g=grayData(pix);
+  document.getElementById("route").textContent=stats.night?"Nighttime branch":"Daytime branch";
+  const cell=6,gw=Math.floor(DW/cell),gh=Math.floor(DH/cell),mask=new Uint8Array(gw*gh);
+  if(!stats.night){
+    if(!bg){bg=new Float32Array(g.length);for(let i=0;i<g.length;i++)bg[i]=g[i]}
+    const diff=new Uint8Array(g.length);
+    for(let i=0;i<g.length;i++){diff[i]=Math.abs(g[i]-bg[i]);bg[i]=bg[i]*0.965+g[i]*0.035}
+    for(let cy=0;cy<gh;cy++)for(let cx=0;cx<gw;cx++){
+      if(cy<gh*.32)continue;let hot=0,total=0;
+      for(let yy=0;yy<cell;yy++)for(let xx=0;xx<cell;xx++){const x=cx*cell+xx,y=cy*cell+yy;if(x<DW&&y<DH){total++;if(diff[y*DW+x]>20)hot++}}
+      if(hot>total*.24)mask[cy*gw+cx]=1;
+    }
+  }else{
+    for(let cy=0;cy<gh;cy++)for(let cx=0;cx<gw;cx++){
+      if(cy<gh*.35)continue;let hot=0,total=0;
+      for(let yy=0;yy<cell;yy++)for(let xx=0;xx<cell;xx++){const x=cx*cell+xx,y=cy*cell+yy;if(x<DW&&y<DH){total++;if(g[y*DW+x]>205)hot++}}
+      if(hot>total*.18)mask[cy*gw+cx]=1;
+    }
   }
-
-  let peak=0;
-  for(let i=1;i<256;i++)if(hist[i]>hist[peak])peak=i;
-  const mean=sum/Math.max(1,count);
-  const night=peak<=30;
-
-  document.getElementById("route").textContent=night?"Nighttime branch":"Daytime branch";
-  document.getElementById("stats").textContent="Value-histogram peak: "+peak+" · Mean brightness: "+mean.toFixed(1);
-
-  const full=a.getImageData(0,0,w,h),out=b.createImageData(w,h);
-  for(let i=0;i<full.data.length;i+=4){
-    const v=Math.max(full.data[i],full.data[i+1],full.data[i+2]);
-    const z=night?(v>170?255:0):Math.round(0.299*full.data[i]+0.587*full.data[i+1]+0.114*full.data[i+2]);
-    out.data[i]=out.data[i+1]=out.data[i+2]=z;
-    out.data[i+3]=255;
+  let boxes=connectedBoxes(mask,gw,gh,cell,W/DW,H/DH,stats.night?1:2);
+  boxes=boxes.filter(q=>q.w>=16&&q.h>=12&&q.w<=190&&q.h<=130&&q.y+q.h>H*.38);
+  // Merge strongly overlapping/touching regions.
+  const merged=[];
+  for(const q of boxes){let hit=null;for(const m of merged){const gap=10;if(q.x<m.x+m.w+gap&&q.x+q.w+gap>m.x&&q.y<m.y+m.h+gap&&q.y+q.h+gap>m.y){hit=m;break}}
+    if(hit){const x1=Math.min(hit.x,q.x),y1=Math.min(hit.y,q.y),x2=Math.max(hit.x+hit.w,q.x+q.w),y2=Math.max(hit.y+hit.h,q.y+q.h);hit.x=x1;hit.y=y1;hit.w=x2-x1;hit.h=y2-y1}else merged.push({...q})
   }
-  b.putImageData(out,0,0);
-  b.strokeStyle="#1976d2";
-  b.lineWidth=3;
-  b.strokeRect(2,Math.round(h/2),w-4,Math.max(2,Math.round(h/2)-3));
+  b.strokeStyle="#00c853";b.lineWidth=3;b.font="bold 14px Arial";b.fillStyle="#00c853";
+  let count=0;
+  for(const q of merged){if(q.w>210||q.h>150)continue;count++;b.strokeRect(q.x,q.y,q.w,q.h);b.fillText("vehicle",q.x+3,Math.max(14,q.y-4))}
+  document.getElementById("stats").textContent="Value-histogram peak: "+stats.peak+" · Mean brightness: "+stats.mean.toFixed(1)+" · Candidate regions: "+count;
+  frameNo++;
 }
-
 function runVideo(url){
-  stopRun();
-  const myToken=runToken;
-  worker.src=url;
-  worker.load();
-
-  worker.onloadeddata=async()=>{
-    try{await worker.play()}catch(_){}
-    const tick=()=>{
-      if(myToken!==runToken)return;
-      if(worker.readyState>=2)processSource(worker,worker.videoWidth,worker.videoHeight);
-      timer=setTimeout(tick,180);
-    };
-    tick();
+  stopRun();const myToken=runToken;worker.src=url;worker.load();
+  worker.onloadeddata=async()=>{try{await worker.play()}catch(_){}
+    const tick=()=>{if(myToken!==runToken)return;if(worker.readyState>=2)detectFrame(worker,worker.videoWidth,worker.videoHeight);timer=setTimeout(tick,120)};tick();
   };
 }
-
-function showImage(url){
-  stopRun();
-  const img=new Image();
-  img.onload=()=>processSource(img,img.width,img.height);
-  img.src=url;
-}
-
-file.onchange=e=>{
-  const chosen=e.target.files[0];
-  if(!chosen)return;
-  if(activeURL)URL.revokeObjectURL(activeURL);
-  activeURL=URL.createObjectURL(chosen);
-
-  if(chosen.type.startsWith("video/"))runVideo(activeURL);
-  else showImage(activeURL);
-};
-
-document.getElementById("useSample").onclick=()=>{
-  runVideo("./assets/sample-vehicle.mp4");
-  window.scrollTo({top:0,behavior:"smooth"});
-};
+function showImage(url){stopRun();const img=new Image();img.onload=()=>{detectFrame(img,img.width,img.height);document.getElementById("stats").textContent+=" · Static image: routing preview only"};img.src=url}
+file.onchange=e=>{const chosen=e.target.files[0];if(!chosen)return;if(activeURL)URL.revokeObjectURL(activeURL);activeURL=URL.createObjectURL(chosen);chosen.type.startsWith("video/")?runVideo(activeURL):showImage(activeURL)};
+document.getElementById("useSample").onclick=()=>{runVideo("./assets/sample-vehicle.mp4?v=4");window.scrollTo({top:0,behavior:"smooth"})};
 </script></body></html>
