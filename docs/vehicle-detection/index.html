@@ -60,9 +60,9 @@ const file=document.getElementById("file"),sample=document.getElementById("sampl
 const CLIP_START=9,CLIP_END=12;
 const cin=document.getElementById("input"),cout=document.getElementById("processed"),work=document.getElementById("work");
 const a=cin.getContext("2d"),b=cout.getContext("2d"),wctx=work.getContext("2d",{willReadFrequently:true});
-let activeURL=null,runToken=0,timer=null,bg=null,frameNo=0,tracked=[];
+let activeURL=null,runToken=0,timer=null,bg=null,frameNo=0,tracked=[],grayHistory=[];
 
-function stopRun(){runToken++;if(timer){clearTimeout(timer);timer=null}worker.pause();bg=null;frameNo=0;tracked=[]}
+function stopRun(){runToken++;if(timer){clearTimeout(timer);timer=null}worker.pause();bg=null;frameNo=0;tracked=[];grayHistory=[]}
 function sceneStats(data){
   const hist=new Uint32Array(256);let sum=0,count=0;
   for(let i=0;i<data.length;i+=16){const v=Math.max(data[i],data[i+1],data[i+2]);hist[v]++;sum+=v;count++}
@@ -137,17 +137,24 @@ function detectFrame(src,sw,sh){
   const cell=6,gw=Math.floor(DW/cell),gh=Math.floor(DH/cell),mask=new Uint8Array(gw*gh);
   if(!stats.night){
     if(!bg){bg=new Float32Array(g.length);for(let i=0;i<g.length;i++)bg[i]=g[i]}
+    const ref=grayHistory.length>=3?grayHistory[0]:null;
     const diff=new Uint8Array(g.length);
     for(let i=0;i<g.length;i++){
-      const d=Math.abs(g[i]-bg[i]);
-      diff[i]=d;
-      if(d<18)bg[i]=bg[i]*0.99+g[i]*0.01;
+      const dBg=Math.abs(g[i]-bg[i]);
+      const dMove=ref?Math.abs(g[i]-ref[i]):0;
+      // Require recent motion once a short temporal history exists. This prevents
+      // "ghost cars" left behind by the first-frame background while preserving
+      // the slowly adapting background behaviour of the original preview.
+      diff[i]=ref&&dMove<=8?0:Math.max(dBg,dMove);
+      if(!ref||dMove<6)bg[i]=bg[i]*0.97+g[i]*0.03;
     }
     for(let cy=0;cy<gh;cy++)for(let cx=0;cx<gw;cx++){
       if(cy<gh*.32)continue;let hot=0,total=0;
-      for(let yy=0;yy<cell;yy++)for(let xx=0;xx<cell;xx++){const x=cx*cell+xx,y=cy*cell+yy;if(x<DW&&y<DH){total++;if(diff[y*DW+x]>18)hot++}}
-      if(hot>total*.20)mask[cy*gw+cx]=1;
+      for(let yy=0;yy<cell;yy++)for(let xx=0;xx<cell;xx++){const x=cx*cell+xx,y=cy*cell+yy;if(x<DW&&y<DH){total++;if(diff[y*DW+x]>12)hot++}}
+      if(hot>total*.15)mask[cy*gw+cx]=1;
     }
+    grayHistory.push(g.slice());
+    if(grayHistory.length>3)grayHistory.shift();
   }else{
     for(let cy=0;cy<gh;cy++)for(let cx=0;cx<gw;cx++){
       if(cy<gh*.35)continue;let hot=0,total=0;
@@ -157,7 +164,7 @@ function detectFrame(src,sw,sh){
   }
   const cleanMask=tidyMask(mask,gw,gh);
   let boxes=connectedBoxes(cleanMask,gw,gh,cell,W/DW,H/DH,stats.night?1:2);
-  boxes=boxes.filter(q=>q.w>=16&&q.h>=12&&q.w<=190&&q.h<=130&&q.density>=.28&&(q.y+q.h/2)>roiTop);
+  boxes=boxes.filter(q=>q.w>=16&&q.h>=12&&q.w<=190&&q.h<=130&&q.density>=.12&&(q.y+q.h/2)>roiTop);
   // Merge strongly overlapping/touching regions.
   const merged=[];
   for(const q of boxes){let hit=null;for(const m of merged){const gap=10;if(q.x<m.x+m.w+gap&&q.x+q.w+gap>m.x&&q.y<m.y+m.h+gap&&q.y+q.h+gap>m.y){hit=m;break}}
@@ -181,7 +188,7 @@ function runVideo(url,clipStart=null,clipEnd=null){
     try{await worker.play()}catch(_){}
     const tick=()=>{
       if(myToken!==runToken)return;
-      if(clipEnd!==null&&worker.currentTime>=clipEnd){worker.currentTime=clipStart;frameNo=0}
+      if(clipEnd!==null&&worker.currentTime>=clipEnd){worker.currentTime=clipStart;frameNo=0;tracked=[];grayHistory=[];timer=setTimeout(tick,150);return}
       if(worker.readyState>=2)detectFrame(worker,worker.videoWidth,worker.videoHeight);
       timer=setTimeout(tick,120)
     };
