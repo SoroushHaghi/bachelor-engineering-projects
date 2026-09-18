@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hybrid Image Generation | Soroush Haghi</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f6f7f9;color:#171717;font-family:Arial,Helvetica,sans-serif}.wrap{max-width:1050px;margin:auto;padding:36px 18px 52px}.top{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;margin-bottom:22px}h1{font-size:36px;margin:0 0 7px}.meta{color:#666}.source{color:#171717;text-decoration:none;border:1px solid #ccc;background:#fff;padding:9px 12px;border-radius:8px;font-size:13px}.panel{background:#fff;border:1px solid #ddd;border-radius:14px;padding:18px}.controls{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px}.ctl{padding:12px;border:1px solid #e5e5e5;border-radius:10px}.ct{display:flex;justify-content:space-between;gap:8px;font-size:13px;margin-bottom:8px}input[type=range]{width:100%}.toolbar{display:flex;flex-wrap:wrap;gap:9px;margin-bottom:16px}button,.file{font:inherit;font-size:13px;padding:9px 12px;border:1px solid #ccc;border-radius:9px;background:#fff;cursor:pointer}button.primary{background:#111;color:#fff;border-color:#111}input[type=file]{display:none}.grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}.card{border:1px solid #ddd;border-radius:12px;overflow:hidden;background:#fff}.head{padding:10px 12px;border-bottom:1px solid #eee;font-size:13px;font-weight:700}.cw{aspect-ratio:410/361;background:#eef0f3}canvas{width:100%;height:100%;display:block}.hint{margin-top:14px;color:#666;font-size:13px}@media(max-width:800px){.controls,.grid{grid-template-columns:1fr}.top{flex-direction:column}h1{font-size:29px}}
+</style>
+</head>
+<body><main class="wrap">
+<div class="top"><div><h1>Hybrid Image Generation</h1><div class="meta">MATLAB · Computer Vision · Image Processing</div></div>
+<a class="source" href="https://github.com/SoroushHaghi/bachelor-engineering-projects/tree/main/computer-vision/hybrid-image">View source code</a></div>
+<section class="panel">
+<div class="controls">
+<div class="ctl"><div class="ct"><span>Low-frequency blur</span><b id="v1">8 px</b></div><input id="r1" type="range" min="1" max="24" value="8"></div>
+<div class="ctl"><div class="ct"><span>High-frequency blur</span><b id="v2">10 px</b></div><input id="r2" type="range" min="1" max="24" value="10"></div>
+<div class="ctl"><div class="ct"><span>Detail strength</span><b id="v3">1.30×</b></div><input id="r3" type="range" min="20" max="260" value="130"></div>
+</div>
+<div class="toolbar"><label class="file">Upload image A<input id="fa" type="file" accept="image/*"></label><label class="file">Upload image B<input id="fb" type="file" accept="image/*"></label><button id="swap">Swap images</button><button id="reset">Reset</button><button id="download" class="primary">Download result</button></div>
+<div class="grid">
+<div class="card"><div class="head">Image A</div><div class="cw"><canvas id="a"></canvas></div></div>
+<div class="card"><div class="head">Image B</div><div class="cw"><canvas id="b"></canvas></div></div>
+<div class="card"><div class="head">Hybrid result</div><div class="cw"><canvas id="hy"></canvas></div></div>
+</div>
+<div class="hint">Try viewing the hybrid result from different distances or upload your own pair of images.</div>
+</section></main>
+<script>
+const DOG="https://raw.githubusercontent.com/SoroushHaghi/bachelor-engineering-projects/main/computer-vision/hybrid-image/assets/dog.jpg";
+const CAT="https://raw.githubusercontent.com/SoroushHaghi/bachelor-engineering-projects/main/computer-vision/hybrid-image/assets/cat.jpg";
+const A=new Image(),B=new Image(),$=id=>document.getElementById(id);A.crossOrigin="anonymous";B.crossOrigin="anonymous";let ra=false,rb=false;const ca=$("a"),cb=$("b"),ch=$("hy");
+function draw(ctx,img,w,h){ctx.clearRect(0,0,w,h);ctx.drawImage(img,0,0,w,h)}
+function dat(img,w,h,blur=0){const c=document.createElement("canvas");c.width=w;c.height=h;const x=c.getContext("2d",{willReadFrequently:true});if(blur)x.filter="blur("+blur+"px)";draw(x,img,w,h);x.filter="none";return x.getImageData(0,0,w,h)}
+function render(){if(!ra||!rb)return;const w=410,h=361;[ca,cb,ch].forEach(c=>{c.width=w;c.height=h});draw(ca.getContext("2d"),A,w,h);draw(cb.getContext("2d"),B,w,h);const l=+$("r1").value,hb=+$("r2").value,s=+$("r3").value/100;$("v1").textContent=l+" px";$("v2").textContent=hb+" px";$("v3").textContent=s.toFixed(2)+"×";const low=dat(A,w,h,l),raw=dat(B,w,h),bl=dat(B,w,h,hb),out=new ImageData(w,h);for(let i=0;i<raw.data.length;i+=4){for(let k=0;k<3;k++){const d=(raw.data[i+k]-bl.data[i+k])*s;out.data[i+k]=Math.max(0,Math.min(255,low.data[i+k]+d))}out.data[i+3]=255}ch.getContext("2d").putImageData(out,0,0)}
+A.onload=()=>{ra=true;render()};B.onload=()=>{rb=true;render()};function reset(){ra=rb=false;A.src=DOG;B.src=CAT}reset();["r1","r2","r3"].forEach(id=>$(id).addEventListener("input",()=>requestAnimationFrame(render)));$("reset").onclick=reset;$("swap").onclick=()=>{const s=A.src;ra=rb=false;A.src=B.src;B.src=s};
+function load(file,img,which){if(!file)return;const u=URL.createObjectURL(file);img.crossOrigin=null;if(which==="a")ra=false;else rb=false;img.onload=()=>{URL.revokeObjectURL(u);if(which==="a")ra=true;else rb=true;render()};img.src=u}
+$("fa").onchange=e=>load(e.target.files[0],A,"a");$("fb").onchange=e=>load(e.target.files[0],B,"b");$("download").onclick=()=>{const x=document.createElement("a");x.download="hybrid-image.png";x.href=ch.toDataURL("image/png");x.click()};
+</script></body></html>
