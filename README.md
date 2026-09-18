@@ -5,7 +5,7 @@ Selected undergraduate engineering projects in **computer vision**, **embedded s
 [**Open project pages**](https://soroushhaghi.github.io/bachelor-engineering-projects/)
 
 ## Computer Vision
-- [Hybrid Image Generation](computer-vision/hybrid-image/) — [Live demo](https://soroushhaghi.github.io/bachelor-engineering-projects/hybrid-image/)
+- [Hybrid Image Generation](computer-vision/hybrid-image/) — [Project page](https://soroushhaghi.github.io/bachelor-engineering-projects/hybrid-image/)
 - [Day/Night Vehicle Detection](computer-vision/vehicle-detection/) — [Project page](https://soroushhaghi.github.io/bachelor-engineering-projects/vehicle-detection/)
 
 ## Embedded Systems
