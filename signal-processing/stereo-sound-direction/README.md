@@ -2,16 +2,14 @@
 
 **MATLAB · Signal Processing · Stereo Audio**
 
-## Academic context
-- Undergraduate signal-processing coursework
-- Term 4012
+A MATLAB prototype that processes stereo audio in fixed one-second windows, computes RMS energy for the left and right channels, and classifies the stronger direction.
 
-## Project
-A MATLAB prototype that processes recorded stereo audio in fixed one-second windows and estimates whether the signal energy is stronger in the left or right channel.
+[**Open Interactive Demo**](https://soroushhaghi.github.io/bachelor-engineering-projects/stereo-sound-direction/)
 
 ## Processing
 - Stereo WAV input
 - Left/right channel separation
+- One-second processing windows
 - RMS energy calculation
 - Left/right direction classification
 
