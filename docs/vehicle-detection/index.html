@@ -41,9 +41,9 @@ canvas,video{width:100%;display:block;background:#eef0f3}.route{font-size:28px;f
 
 <div class="sample">
 <h2>Sample clip</h2>
-<div class="muted" style="margin-bottom:10px">Optional short sample from the original project footage. It is not used by the detector until you choose it.</div>
+<div class="muted" style="margin-bottom:10px">Optional 3-second preview from the original project footage at its original resolution. It is not used by the detector until you choose it.</div>
 <div class="sample-grid">
-<video id="sample" controls playsinline preload="metadata" src="./assets/sample-vehicle.mp4?v=4"></video>
+<video id="sample" controls playsinline preload="metadata" src="./assets/sample-vehicle.webm?v=5"></video>
 <div class="sample-actions">
 <button id="useSample" class="button primary">Use this sample in detector</button>
 <div class="muted">You can also upload your own image or short video above. Local files stay in your browser and are not sent to a server.</div>
@@ -57,6 +57,7 @@ canvas,video{width:100%;display:block;background:#eef0f3}.route{font-size:28px;f
 
 <script>
 const file=document.getElementById("file"),sample=document.getElementById("sample"),worker=document.getElementById("worker");
+const CLIP_START=9,CLIP_END=12;
 const cin=document.getElementById("input"),cout=document.getElementById("processed"),work=document.getElementById("work");
 const a=cin.getContext("2d"),b=cout.getContext("2d"),wctx=work.getContext("2d",{willReadFrequently:true});
 let activeURL=null,runToken=0,timer=null,bg=null,frameNo=0;
@@ -125,13 +126,24 @@ function detectFrame(src,sw,sh){
   document.getElementById("stats").textContent="Value-histogram peak: "+stats.peak+" · Mean brightness: "+stats.mean.toFixed(1)+" · Candidate regions: "+count;
   frameNo++;
 }
-function runVideo(url){
+function runVideo(url,clipStart=null,clipEnd=null){
   stopRun();const myToken=runToken;worker.src=url;worker.load();
-  worker.onloadeddata=async()=>{try{await worker.play()}catch(_){}
-    const tick=()=>{if(myToken!==runToken)return;if(worker.readyState>=2)detectFrame(worker,worker.videoWidth,worker.videoHeight);timer=setTimeout(tick,120)};tick();
+  worker.onloadedmetadata=()=>{if(clipStart!==null)worker.currentTime=clipStart};
+  worker.onloadeddata=async()=>{
+    try{await worker.play()}catch(_){}
+    const tick=()=>{
+      if(myToken!==runToken)return;
+      if(clipEnd!==null&&worker.currentTime>=clipEnd){worker.currentTime=clipStart;bg=null;frameNo=0}
+      if(worker.readyState>=2)detectFrame(worker,worker.videoWidth,worker.videoHeight);
+      timer=setTimeout(tick,120)
+    };
+    tick();
   };
 }
 function showImage(url){stopRun();const img=new Image();img.onload=()=>{detectFrame(img,img.width,img.height);document.getElementById("stats").textContent+=" · Static image: routing preview only"};img.src=url}
 file.onchange=e=>{const chosen=e.target.files[0];if(!chosen)return;if(activeURL)URL.revokeObjectURL(activeURL);activeURL=URL.createObjectURL(chosen);chosen.type.startsWith("video/")?runVideo(activeURL):showImage(activeURL)};
-document.getElementById("useSample").onclick=()=>{runVideo("./assets/sample-vehicle.mp4?v=4");window.scrollTo({top:0,behavior:"smooth"})};
+sample.addEventListener("loadedmetadata",()=>{sample.currentTime=CLIP_START});
+sample.addEventListener("play",()=>{if(sample.currentTime<CLIP_START||sample.currentTime>=CLIP_END)sample.currentTime=CLIP_START});
+sample.addEventListener("timeupdate",()=>{if(sample.currentTime>=CLIP_END)sample.currentTime=CLIP_START});
+document.getElementById("useSample").onclick=()=>{runVideo("./assets/sample-vehicle.webm?v=5",CLIP_START,CLIP_END);window.scrollTo({top:0,behavior:"smooth"})};
 </script></body></html>
