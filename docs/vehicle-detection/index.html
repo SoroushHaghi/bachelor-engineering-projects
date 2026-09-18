@@ -60,19 +60,154 @@ const file=document.getElementById("file"),sample=document.getElementById("sampl
 const CLIP_START=9,CLIP_END=12,DETECT_WARMUP_START=6;
 const cin=document.getElementById("input"),cout=document.getElementById("processed"),work=document.getElementById("work");
 const a=cin.getContext("2d"),b=cout.getContext("2d"),wctx=work.getContext("2d",{willReadFrequently:true});
-let activeURL=null,runToken=0,timer=null,bg=null,frameNo=0,tracked=[],warming=false;
 
-function stopRun(){runToken++;if(timer){clearTimeout(timer);timer=null}worker.pause();worker.playbackRate=1;bg=null;frameNo=0;tracked=[];warming=false}
+let activeURL=null,runToken=0,timer=null,frameNo=0,tracked=[],warming=false;
+let mogMean=null,mogVar=null,mogWeight=null,mogPixels=0;
+
+function resetModel(){
+  mogMean=null;mogVar=null;mogWeight=null;mogPixels=0;
+}
+function stopRun(){
+  runToken++;
+  if(timer){clearTimeout(timer);timer=null}
+  worker.pause();worker.playbackRate=1;
+  frameNo=0;tracked=[];warming=false;resetModel();
+}
 function sceneStats(data){
   const hist=new Uint32Array(256);let sum=0,count=0;
-  for(let i=0;i<data.length;i+=16){const v=Math.max(data[i],data[i+1],data[i+2]);hist[v]++;sum+=v;count++}
-  let peak=0;for(let i=1;i<256;i++)if(hist[i]>hist[peak])peak=i;
+  for(let i=0;i<data.length;i+=16){
+    const v=Math.max(data[i],data[i+1],data[i+2]);
+    hist[v]++;sum+=v;count++;
+  }
+  let peak=0;
+  for(let i=1;i<256;i++)if(hist[i]>hist[peak])peak=i;
   return {peak,mean:sum/Math.max(1,count),night:peak<=30};
 }
 function grayData(data){
   const g=new Uint8Array(data.length/4);
-  for(let p=0,i=0;i<data.length;i+=4,p++)g[p]=(0.299*data[i]+0.587*data[i+1]+0.114*data[i+2])|0;
+  for(let p=0,i=0;i<data.length;i+=4,p++){
+    g[p]=(0.299*data[i]+0.587*data[i+1]+0.114*data[i+2])|0;
+  }
   return g;
+}
+function initMog(g){
+  mogPixels=g.length;
+  mogMean=new Float32Array(mogPixels*3);
+  mogVar=new Float32Array(mogPixels*3);
+  mogWeight=new Float32Array(mogPixels*3);
+  for(let i=0;i<mogPixels;i++){
+    const j=i*3;
+    mogMean[j]=g[i]; mogVar[j]=225; mogWeight[j]=1;
+    mogMean[j+1]=g[i]; mogVar[j+1]=225; mogWeight[j+1]=0;
+    mogMean[j+2]=g[i]; mogVar[j+2]=225; mogWeight[j+2]=0;
+  }
+}
+function mogForeground(g,training){
+  if(!mogMean||mogPixels!==g.length)initMog(g);
+  const fg=new Uint8Array(g.length);
+  const alpha=training?0.045:0.004;
+  const rho=training?0.08:0.025;
+
+  for(let i=0;i<g.length;i++){
+    const base=i*3,v=g[i];
+    let match=-1,best=1e9;
+
+    for(let k=0;k<3;k++){
+      const p=base+k,w=mogWeight[p];
+      if(w<=0)continue;
+      const d=v-mogMean[p],d2=d*d;
+      if(d2<=6.25*mogVar[p]&&d2<best){best=d2;match=k}
+    }
+
+    for(let k=0;k<3;k++)mogWeight[base+k]*=(1-alpha);
+
+    if(match>=0){
+      const p=base+match,d=v-mogMean[p];
+      mogWeight[p]+=alpha;
+      mogMean[p]+=rho*d;
+      mogVar[p]=(1-rho)*mogVar[p]+rho*d*d;
+      if(mogVar[p]<36)mogVar[p]=36;
+      else if(mogVar[p]>900)mogVar[p]=900;
+    }else{
+      let r=base;
+      if(mogWeight[base+1]<mogWeight[r])r=base+1;
+      if(mogWeight[base+2]<mogWeight[r])r=base+2;
+      mogMean[r]=v;mogVar[r]=225;mogWeight[r]=alpha;
+      match=r-base;
+    }
+
+    const ws=mogWeight[base]+mogWeight[base+1]+mogWeight[base+2]||1;
+    mogWeight[base]/=ws;mogWeight[base+1]/=ws;mogWeight[base+2]/=ws;
+
+    let bg=0,bgScore=-1;
+    for(let k=0;k<3;k++){
+      const p=base+k;
+      const score=mogWeight[p]/Math.sqrt(Math.max(36,mogVar[p]));
+      if(score>bgScore){bgScore=score;bg=k}
+    }
+
+    if(!training){
+      const p=base+bg;
+      const d=Math.abs(v-mogMean[p]);
+      fg[i]=(match!==bg&&d>12)?1:0;
+    }
+  }
+  return fg;
+}
+function aggregateMask(pixelMask,pw,ph,cell){
+  const gw=Math.floor(pw/cell),gh=Math.floor(ph/cell),mask=new Uint8Array(gw*gh);
+  for(let cy=0;cy<gh;cy++)for(let cx=0;cx<gw;cx++){
+    let hot=0,total=0;
+    for(let yy=0;yy<cell;yy++)for(let xx=0;xx<cell;xx++){
+      const x=cx*cell+xx,y=cy*cell+yy;
+      if(x<pw&&y<ph){total++;hot+=pixelMask[y*pw+x]}
+    }
+    if(hot>=Math.max(2,Math.ceil(total*.16)))mask[cy*gw+cx]=1;
+  }
+  return {mask,gw,gh};
+}
+function dilate(mask,w,h){
+  const out=new Uint8Array(mask.length);
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+    let on=0;
+    for(let yy=-1;yy<=1&&!on;yy++)for(let xx=-1;xx<=1;xx++){
+      const nx=x+xx,ny=y+yy;
+      if(nx>=0&&ny>=0&&nx<w&&ny<h&&mask[ny*w+nx]){on=1;break}
+    }
+    out[y*w+x]=on;
+  }
+  return out;
+}
+function erode(mask,w,h){
+  const out=new Uint8Array(mask.length);
+  for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){
+    let on=1;
+    for(let yy=-1;yy<=1&&on;yy++)for(let xx=-1;xx<=1;xx++){
+      if(!mask[(y+yy)*w+x+xx]){on=0;break}
+    }
+    out[y*w+x]=on;
+  }
+  return out;
+}
+function cleanMask(mask,w,h){
+  // Approximate MATLAB imclose -> imfill -> imopen without changing the source project.
+  let out=erode(dilate(mask,w,h),w,h);
+  const filled=out.slice();
+  for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){
+    const i=y*w+x;if(out[i])continue;
+    let n=0;
+    for(let yy=-1;yy<=1;yy++)for(let xx=-1;xx<=1;xx++)if(xx||yy)n+=out[(y+yy)*w+x+xx];
+    if(n>=6)filled[i]=1;
+  }
+  out=filled;
+  const denoised=out.slice();
+  for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){
+    const i=y*w+x;if(!out[i])continue;
+    let n=0;
+    for(let yy=-1;yy<=1;yy++)for(let xx=-1;xx<=1;xx++)if(xx||yy)n+=out[(y+yy)*w+x+xx];
+    if(n<=1)denoised[i]=0;
+  }
+  return denoised;
 }
 function connectedBoxes(mask,gw,gh,cell,scaleX,scaleY,minCells){
   const seen=new Uint8Array(mask.length),boxes=[];
@@ -80,49 +215,58 @@ function connectedBoxes(mask,gw,gh,cell,scaleX,scaleY,minCells){
   for(let y=0;y<gh;y++)for(let x=0;x<gw;x++){
     const idx=y*gw+x;if(!mask[idx]||seen[idx])continue;
     let top=0;stackX[top]=x;stackY[top]=y;top++;seen[idx]=1;
-    let minX=x,maxX=x,minY=y,maxY=y,n=0;
-    while(top){top--;const cx=stackX[top],cy=stackY[top];n++;if(cx<minX)minX=cx;if(cx>maxX)maxX=cx;if(cy<minY)minY=cy;if(cy>maxY)maxY=cy;
-      const ns=[[cx-1,cy],[cx+1,cy],[cx,cy-1],[cx,cy+1]];
-      for(const [nx,ny] of ns){if(nx<0||ny<0||nx>=gw||ny>=gh)continue;const ni=ny*gw+nx;if(mask[ni]&&!seen[ni]){seen[ni]=1;stackX[top]=nx;stackY[top]=ny;top++}}
+    let minX=x,maxX=x,minY=y,maxY=y,n=0,sumX=0,sumY=0;
+    while(top){
+      top--;const cx=stackX[top],cy=stackY[top];
+      n++;sumX+=cx+.5;sumY+=cy+.5;
+      if(cx<minX)minX=cx;if(cx>maxX)maxX=cx;if(cy<minY)minY=cy;if(cy>maxY)maxY=cy;
+      for(let yy=-1;yy<=1;yy++)for(let xx=-1;xx<=1;xx++){
+        if(!xx&&!yy)continue;
+        const nx=cx+xx,ny=cy+yy;
+        if(nx<0||ny<0||nx>=gw||ny>=gh)continue;
+        const ni=ny*gw+nx;
+        if(mask[ni]&&!seen[ni]){seen[ni]=1;stackX[top]=nx;stackY[top]=ny;top++}
+      }
     }
     if(n>=minCells){
       const bw=maxX-minX+1,bh=maxY-minY+1;
-      boxes.push({x:minX*cell*scaleX,y:minY*cell*scaleY,w:bw*cell*scaleX,h:bh*cell*scaleY,cells:n,density:n/(bw*bh)})
+      boxes.push({
+        x:minX*cell*scaleX,
+        y:minY*cell*scaleY,
+        w:bw*cell*scaleX,
+        h:bh*cell*scaleY,
+        cells:n,
+        density:n/(bw*bh),
+        cx:(sumX/n)*cell*scaleX,
+        cy:(sumY/n)*cell*scaleY
+      });
     }
   }
   return boxes;
 }
-function tidyMask(mask,gw,gh){
-  const out=mask.slice();
-  for(let y=1;y<gh-1;y++)for(let x=1;x<gw-1;x++){
-    const idx=y*gw+x;let neighbors=0;
-    for(let yy=-1;yy<=1;yy++)for(let xx=-1;xx<=1;xx++)if(xx||yy)neighbors+=mask[(y+yy)*gw+x+xx];
-    if(!mask[idx]&&neighbors>=3)out[idx]=1;
-    else if(mask[idx]&&neighbors<=1)out[idx]=0;
-  }
-  return out;
-}
-function boxIoU(a,bx){
-  const x1=Math.max(a.x,bx.x),y1=Math.max(a.y,bx.y),x2=Math.min(a.x+a.w,bx.x+bx.w),y2=Math.min(a.y+a.h,bx.y+bx.h);
+function boxIoU(x,y){
+  const x1=Math.max(x.x,y.x),y1=Math.max(x.y,y.y),x2=Math.min(x.x+x.w,y.x+y.w),y2=Math.min(x.y+x.h,y.y+y.h);
   const inter=Math.max(0,x2-x1)*Math.max(0,y2-y1);
-  return inter/Math.max(1,a.w*a.h+bx.w*bx.h-inter);
+  return inter/Math.max(1,x.w*x.h+y.w*y.h-inter);
 }
 function stabilizeBoxes(boxes){
   const next=[],used=new Set();
   for(const q of boxes){
-    let best=-1,bestScore=0;
+    let best=-1,score=0;
     for(let i=0;i<tracked.length;i++){
       if(used.has(i))continue;
-      const score=boxIoU(q,tracked[i]);
-      if(score>bestScore){bestScore=score;best=i}
+      const s=boxIoU(q,tracked[i]);
+      if(s>score){score=s;best=i}
     }
-    if(best>=0&&bestScore>.12){
-      const p=tracked[best],mix=.25;
-      next.push({...q,x:q.x*(1-mix)+p.x*mix,y:q.y*(1-mix)+p.y*mix,w:q.w*(1-mix)+p.w*mix,h:q.h*(1-mix)+p.h*mix,age:0});
+    if(best>=0&&score>.10){
+      const p=tracked[best],m=.18;
+      next.push({...q,x:q.x*(1-m)+p.x*m,y:q.y*(1-m)+p.y*m,w:q.w*(1-m)+p.w*m,h:q.h*(1-m)+p.h*m,age:0});
       used.add(best);
     }else next.push({...q,age:0});
   }
-  for(let i=0;i<tracked.length;i++)if(!used.has(i)&&tracked[i].age<2)next.push({...tracked[i],age:tracked[i].age+1});
+  for(let i=0;i<tracked.length;i++){
+    if(!used.has(i)&&tracked[i].age<1)next.push({...tracked[i],age:tracked[i].age+1});
+  }
   tracked=next;
   return next;
 }
@@ -130,15 +274,14 @@ function detectFrame(src,sw,sh,training=false){
   if(!sw||!sh)return;
   const W=592,H=Math.round(W*sh/sw),DW=296,DH=Math.round(DW*sh/sw);
   const roiTop=Math.round(H/2);
+
   work.width=DW;work.height=DH;
   wctx.drawImage(src,0,0,DW,DH);
-  const pix=wctx.getImageData(0,0,DW,DH).data,stats=sceneStats(pix),g=grayData(pix);
+  const pix=wctx.getImageData(0,0,DW,DH).data;
+  const stats=sceneStats(pix),g=grayData(pix);
 
-  // The MATLAB version trains its foreground model before using the detections.
-  // For the built-in sample we do the same with a short hidden pre-roll.
   if(training&&!stats.night){
-    if(!bg){bg=new Float32Array(g.length);for(let i=0;i<g.length;i++)bg[i]=g[i]}
-    else for(let i=0;i<g.length;i++)bg[i]=bg[i]*0.92+g[i]*0.08;
+    mogForeground(g,true);
     frameNo++;
     return;
   }
@@ -146,42 +289,59 @@ function detectFrame(src,sw,sh,training=false){
   cin.width=W;cin.height=H;cout.width=W;cout.height=H;
   a.drawImage(src,0,0,W,H);b.drawImage(src,0,0,W,H);
   document.getElementById("route").textContent=stats.night?"Nighttime branch":"Daytime branch";
-  const cell=6,gw=Math.floor(DW/cell),gh=Math.floor(DH/cell),mask=new Uint8Array(gw*gh);
+
+  const cell=4;
+  let mask,gw,gh;
+
   if(!stats.night){
-    if(!bg){bg=new Float32Array(g.length);for(let i=0;i<g.length;i++)bg[i]=g[i]}
-    const diff=new Uint8Array(g.length);
-    for(let i=0;i<g.length;i++){
-      const d=Math.abs(g[i]-bg[i]);
-      diff[i]=d;
-      if(d<14)bg[i]=bg[i]*0.99+g[i]*0.01;
-    }
-    for(let cy=0;cy<gh;cy++)for(let cx=0;cx<gw;cx++){
-      if(cy<gh*.32)continue;let hot=0,total=0;
-      for(let yy=0;yy<cell;yy++)for(let xx=0;xx<cell;xx++){const x=cx*cell+xx,y=cy*cell+yy;if(x<DW&&y<DH){total++;if(diff[y*DW+x]>14)hot++}}
-      if(hot>total*.18)mask[cy*gw+cx]=1;
-    }
+    const pixelFg=mogForeground(g,false);
+    const agg=aggregateMask(pixelFg,DW,DH,cell);
+    mask=cleanMask(agg.mask,agg.gw,agg.gh);gw=agg.gw;gh=agg.gh;
   }else{
+    gw=Math.floor(DW/cell);gh=Math.floor(DH/cell);mask=new Uint8Array(gw*gh);
     for(let cy=0;cy<gh;cy++)for(let cx=0;cx<gw;cx++){
-      if(cy<gh*.35)continue;let hot=0,total=0;
-      for(let yy=0;yy<cell;yy++)for(let xx=0;xx<cell;xx++){const x=cx*cell+xx,y=cy*cell+yy;if(x<DW&&y<DH){total++;if(g[y*DW+x]>205)hot++}}
-      if(hot>total*.18)mask[cy*gw+cx]=1;
+      let hot=0,total=0;
+      for(let yy=0;yy<cell;yy++)for(let xx=0;xx<cell;xx++){
+        const x=cx*cell+xx,y=cy*cell+yy;
+        if(x<DW&&y<DH){total++;if(g[y*DW+x]>205)hot++}
+      }
+      if(hot>=Math.max(2,Math.ceil(total*.18)))mask[cy*gw+cx]=1;
     }
+    mask=cleanMask(mask,gw,gh);
   }
-  let boxes=connectedBoxes(mask,gw,gh,cell,W/DW,H/DH,stats.night?1:2);
-  boxes=boxes.filter(q=>q.w>=16&&q.h>=12&&q.w<=190&&q.h<=130&&q.density>=.12&&(q.y+q.h/2)>roiTop);
-  // Original MATLAB ROI: lower half of the frame, drawn as a blue window.
+
+  let boxes=connectedBoxes(mask,gw,gh,cell,W/DW,H/DH,2);
+
+  // Keep the original project's region rule: filled component / bounding-box area > 0.4,
+  // and only count components whose centroid lies in the lower half of the frame.
+  boxes=boxes.filter(q=>
+    q.density>0.40 &&
+    q.cy>roiTop &&
+    q.w>=12 && q.h>=8 &&
+    q.w<=230 && q.h<=165
+  );
+
   b.strokeStyle="#1976d2";b.lineWidth=3;
   b.strokeRect(2,roiTop,W-4,Math.max(2,H-roiTop-3));
 
-  const visible=stabilizeBoxes(boxes.filter(q=>q.w<=210&&q.h<=150));
+  const visible=stabilizeBoxes(boxes);
   b.strokeStyle="#d32f2f";b.lineWidth=2;b.font="bold 14px Arial";b.fillStyle="#d32f2f";
-  let count=0;
-  for(const q of visible){count++;b.strokeRect(q.x,q.y,q.w,q.h);b.fillText("vehicle",q.x+3,Math.max(14,q.y-4))}
-  document.getElementById("stats").textContent="Value-histogram peak: "+stats.peak+" · Mean brightness: "+stats.mean.toFixed(1)+" · Candidate regions: "+count;
+  for(const q of visible){
+    b.strokeRect(q.x,q.y,q.w,q.h);
+    b.fillText("vehicle",q.x+3,Math.max(14,q.y-4));
+  }
+
+  document.getElementById("stats").textContent=
+    "Value-histogram peak: "+stats.peak+
+    " · Mean brightness: "+stats.mean.toFixed(1)+
+    " · Candidate regions: "+visible.length;
   frameNo++;
 }
 function runVideo(url,clipStart=null,clipEnd=null,warmupStart=null){
-  stopRun();const myToken=runToken;worker.src=url;worker.load();
+  stopRun();
+  const myToken=runToken;
+  worker.src=url;worker.load();
+
   worker.onloadedmetadata=()=>{
     warming=warmupStart!==null&&clipStart!==null&&warmupStart<clipStart;
     worker.currentTime=warming?warmupStart:(clipStart!==null?clipStart:0);
@@ -191,24 +351,42 @@ function runVideo(url,clipStart=null,clipEnd=null,warmupStart=null){
     try{await worker.play()}catch(_){}
     const tick=()=>{
       if(myToken!==runToken)return;
+
       if(warming&&clipStart!==null&&worker.currentTime>=clipStart){
         warming=false;worker.playbackRate=1;worker.currentTime=clipStart;tracked=[];
-        timer=setTimeout(tick,120);return;
+        timer=setTimeout(tick,100);return;
       }
       if(clipEnd!==null&&!warming&&worker.currentTime>=clipEnd){
-        worker.currentTime=clipStart;frameNo=0;tracked=[];
-        timer=setTimeout(tick,150);return;
+        worker.currentTime=clipStart;tracked=[];
+        timer=setTimeout(tick,120);return;
       }
+
       if(worker.readyState>=2)detectFrame(worker,worker.videoWidth,worker.videoHeight,warming);
-      timer=setTimeout(tick,warming?60:120)
+      timer=setTimeout(tick,warming?35:100);
     };
     tick();
   };
 }
-function showImage(url){stopRun();const img=new Image();img.onload=()=>{detectFrame(img,img.width,img.height);document.getElementById("stats").textContent+=" · Static image: routing preview only"};img.src=url}
-file.onchange=e=>{const chosen=e.target.files[0];if(!chosen)return;if(activeURL)URL.revokeObjectURL(activeURL);activeURL=URL.createObjectURL(chosen);chosen.type.startsWith("video/")?runVideo(activeURL):showImage(activeURL)};
+function showImage(url){
+  stopRun();
+  const img=new Image();
+  img.onload=()=>{
+    detectFrame(img,img.width,img.height);
+    document.getElementById("stats").textContent+=" · Static image: routing preview only";
+  };
+  img.src=url;
+}
+file.onchange=e=>{
+  const chosen=e.target.files[0];if(!chosen)return;
+  if(activeURL)URL.revokeObjectURL(activeURL);
+  activeURL=URL.createObjectURL(chosen);
+  chosen.type.startsWith("video/")?runVideo(activeURL):showImage(activeURL);
+};
 sample.addEventListener("loadedmetadata",()=>{sample.currentTime=CLIP_START});
 sample.addEventListener("play",()=>{if(sample.currentTime<CLIP_START||sample.currentTime>=CLIP_END)sample.currentTime=CLIP_START});
 sample.addEventListener("timeupdate",()=>{if(sample.currentTime>=CLIP_END)sample.currentTime=CLIP_START});
-document.getElementById("useSample").onclick=()=>{runVideo("./assets/sample-vehicle.webm?v=5",CLIP_START,CLIP_END,DETECT_WARMUP_START);window.scrollTo({top:0,behavior:"smooth"})};
+document.getElementById("useSample").onclick=()=>{
+  runVideo("./assets/sample-vehicle.webm?v=5",CLIP_START,CLIP_END,DETECT_WARMUP_START);
+  window.scrollTo({top:0,behavior:"smooth"});
+};
 </script></body></html>
