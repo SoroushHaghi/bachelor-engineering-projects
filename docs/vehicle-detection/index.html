@@ -7,73 +7,138 @@
 *{box-sizing:border-box}body{margin:0;background:#f6f7f9;color:#171717;font-family:Arial,Helvetica,sans-serif}
 .wrap{max-width:1020px;margin:auto;padding:36px 18px 52px}.top{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;margin-bottom:22px}
 h1{font-size:34px;margin:0 0 7px}.meta{color:#666}.source{color:#171717;text-decoration:none;border:1px solid #ccc;background:#fff;padding:9px 12px;border-radius:8px;font-size:13px}
-.panel{background:#fff;border:1px solid #ddd;border-radius:14px;padding:20px}.upload{display:inline-block;padding:10px 14px;border:1px solid #ccc;border-radius:9px;background:#fff;cursor:pointer}.upload input{display:none}
+.panel{background:#fff;border:1px solid #ddd;border-radius:14px;padding:20px}.upload,.button{display:inline-block;padding:10px 14px;border:1px solid #ccc;border-radius:9px;background:#fff;cursor:pointer;font:inherit}.upload input{display:none}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:18px}.card{border:1px solid #e1e1e1;border-radius:12px;overflow:hidden;background:#fff}.head{padding:10px 12px;border-bottom:1px solid #eee;font-size:13px;font-weight:700}.body{padding:14px}
-canvas{width:100%;display:block;background:#eef0f3}.route{font-size:28px;font-weight:700;margin:6px 0}.muted{color:#666;font-size:13px;line-height:1.55}.flow{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:16px}.step{border:1px solid #ddd;border-radius:10px;padding:12px;font-size:13px}.step b{display:block;margin-bottom:5px}
-@media(max-width:760px){.top{flex-direction:column}.grid,.flow{grid-template-columns:1fr}}
+canvas,video{width:100%;display:block;background:#eef0f3}.route{font-size:28px;font-weight:700;margin:6px 0}.muted{color:#666;font-size:13px;line-height:1.55}.flow{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:16px}.step{border:1px solid #ddd;border-radius:10px;padding:12px;font-size:13px}.step b{display:block;margin-bottom:5px}
+.sample{margin-top:20px;border-top:1px solid #e5e5e5;padding-top:18px}.sample h2{font-size:16px;margin:0 0 8px}.sample-grid{display:grid;grid-template-columns:1.2fr .8fr;gap:14px;align-items:start}.sample video{border-radius:10px;border:1px solid #ddd}.sample-actions{display:flex;flex-direction:column;gap:10px}.button.primary{background:#111;color:#fff;border-color:#111}
+@media(max-width:760px){.top{flex-direction:column}.grid,.flow,.sample-grid{grid-template-columns:1fr}}
 </style></head>
 <body><main class="wrap">
 <div class="top"><div><h1>Day/Night Vehicle Detection</h1><div class="meta">MATLAB · Computer Vision · Image Processing</div></div>
 <a class="source" href="https://github.com/SoroushHaghi/bachelor-engineering-projects/tree/main/computer-vision/vehicle-detection">View source code</a></div>
+
 <section class="panel">
 <label class="upload">Upload image or short video<input id="file" type="file" accept="image/*,video/mp4,video/webm"></label>
+
 <div class="grid">
 <div class="card"><div class="head">Input frame</div><canvas id="input" width="640" height="400"></canvas></div>
-<div class="card"><div class="head">Routing preview</div><div class="body"><div class="muted">Estimated branch from brightness/value statistics</div><div id="route" class="route">—</div><div id="stats" class="muted">Upload an image to inspect the routing stage.</div><canvas id="processed" width="640" height="330" style="margin-top:12px"></canvas></div></div>
+<div class="card"><div class="head">Routing preview</div><div class="body">
+<div class="muted">Estimated branch from brightness/value statistics</div>
+<div id="route" class="route">—</div>
+<div id="stats" class="muted">Choose an image, a short video, or the sample clip below.</div>
+<canvas id="processed" width="640" height="330" style="margin-top:12px"></canvas>
+</div></div>
 </div>
+
 <div class="flow">
 <div class="step"><b>1. Scene routing</b>HSV/value-channel statistics decide whether the frame follows the daytime or nighttime branch.</div>
 <div class="step"><b>2. Daytime branch</b>GMM foreground detection, morphology, connected regions, and bounding-box filtering.</div>
 <div class="step"><b>3. Nighttime branch</b>Thresholding, morphological opening, and bright-component analysis.</div>
 <div class="step"><b>4. Vehicle logic</b>Region/headlight components are filtered and counted inside the region of interest.</div>
 </div>
-<div class="muted" style="margin-top:16px">This lightweight browser page accepts an image or short local video and visualizes the day/night routing and thresholding stages in real time. The full GMM/morphology/component vehicle-detection pipeline remains in the linked MATLAB source.</div>
-</section></main>
+
+<div class="muted" style="margin-top:16px">This lightweight browser page visualizes the day/night routing and thresholding stages. The full GMM/morphology/component vehicle-detection pipeline remains in the linked MATLAB source.</div>
+
+<div class="sample">
+<h2>Sample clip</h2>
+<div class="muted" style="margin-bottom:10px">Optional test footage from the original project material. It is not loaded into the processing preview until you choose to use it.</div>
+<div class="sample-grid">
+<video id="sample" controls playsinline preload="metadata" src="./assets/sample-vehicle.mp4"></video>
+<div class="sample-actions">
+<button id="useSample" class="button primary">Use this sample in preview</button>
+<div class="muted">You can also upload your own local image or short video above. Files stay in your browser and are not uploaded to a server.</div>
+</div>
+</div>
+</div>
+</section>
+<video id="worker" muted loop playsinline preload="auto" style="display:none"></video>
+</main>
+
 <script>
-const file=document.getElementById("file"),cin=document.getElementById("input"),cout=document.getElementById("processed"),a=cin.getContext("2d",{willReadFrequently:true}),b=cout.getContext("2d");
-let activeURL=null,token=0;
+const file=document.getElementById("file");
+const sample=document.getElementById("sample");
+const worker=document.getElementById("worker");
+const cin=document.getElementById("input"),cout=document.getElementById("processed");
+const a=cin.getContext("2d",{willReadFrequently:true}),b=cout.getContext("2d");
+let activeURL=null,runToken=0,timer=null;
+
+function stopRun(){
+  runToken++;
+  if(timer){clearTimeout(timer);timer=null}
+  worker.pause();
+}
 
 function processSource(src,sw,sh){
-  const w=640,h=Math.max(240,Math.round(w*sh/sw));
+  if(!sw||!sh)return;
+  const w=640;
+  const h=Math.max(240,Math.round(w*sh/sw));
   cin.width=w;cin.height=h;cout.width=w;cout.height=h;
   a.drawImage(src,0,0,w,h);
+
   const d=a.getImageData(0,0,w,h),hist=new Uint32Array(256);
   let sum=0,count=0;
   for(let i=0;i<d.data.length;i+=16){
-    const v=Math.max(d.data[i],d.data[i+1],d.data[i+2]);hist[v]++;sum+=v;count++;
+    const v=Math.max(d.data[i],d.data[i+1],d.data[i+2]);
+    hist[v]++;sum+=v;count++;
   }
-  let peak=0;for(let i=1;i<256;i++)if(hist[i]>hist[peak])peak=i;
-  const mean=sum/Math.max(1,count),night=peak<=30;
+
+  let peak=0;
+  for(let i=1;i<256;i++)if(hist[i]>hist[peak])peak=i;
+  const mean=sum/Math.max(1,count);
+  const night=peak<=30;
+
   document.getElementById("route").textContent=night?"Nighttime branch":"Daytime branch";
   document.getElementById("stats").textContent="Value-histogram peak: "+peak+" · Mean brightness: "+mean.toFixed(1);
+
   const full=a.getImageData(0,0,w,h),out=b.createImageData(w,h);
   for(let i=0;i<full.data.length;i+=4){
     const v=Math.max(full.data[i],full.data[i+1],full.data[i+2]);
-    const z=night?(v>170?255:0):v;
-    out.data[i]=out.data[i+1]=out.data[i+2]=z;out.data[i+3]=255;
+    const z=night?(v>170?255:0):Math.round(0.299*full.data[i]+0.587*full.data[i+1]+0.114*full.data[i+2]);
+    out.data[i]=out.data[i+1]=out.data[i+2]=z;
+    out.data[i+3]=255;
   }
   b.putImageData(out,0,0);
-  b.strokeStyle="#1976d2";b.lineWidth=3;b.strokeRect(2,Math.round(h/2),w-4,Math.round(h/2)-3);
+  b.strokeStyle="#1976d2";
+  b.lineWidth=3;
+  b.strokeRect(2,Math.round(h/2),w-4,Math.max(2,Math.round(h/2)-3));
+}
+
+function runVideo(url){
+  stopRun();
+  const myToken=runToken;
+  worker.src=url;
+  worker.load();
+
+  worker.onloadeddata=async()=>{
+    try{await worker.play()}catch(_){}
+    const tick=()=>{
+      if(myToken!==runToken)return;
+      if(worker.readyState>=2)processSource(worker,worker.videoWidth,worker.videoHeight);
+      timer=setTimeout(tick,180);
+    };
+    tick();
+  };
+}
+
+function showImage(url){
+  stopRun();
+  const img=new Image();
+  img.onload=()=>processSource(img,img.width,img.height);
+  img.src=url;
 }
 
 file.onchange=e=>{
-  const chosen=e.target.files[0];if(!chosen)return;
-  token++;const myToken=token;
+  const chosen=e.target.files[0];
+  if(!chosen)return;
   if(activeURL)URL.revokeObjectURL(activeURL);
   activeURL=URL.createObjectURL(chosen);
 
-  if(chosen.type.startsWith("video/")){
-    const v=document.createElement("video");
-    v.src=activeURL;v.muted=true;v.loop=true;v.playsInline=true;
-    v.onloadedmetadata=async()=>{
-      try{await v.play()}catch(_){}
-      const tick=()=>{if(myToken!==token)return;if(v.readyState>=2)processSource(v,v.videoWidth,v.videoHeight);requestAnimationFrame(tick)};
-      tick();
-    };
-  }else{
-    const img=new Image();
-    img.onload=()=>{if(myToken===token)processSource(img,img.width,img.height)};
-    img.src=activeURL;
-  }
+  if(chosen.type.startsWith("video/"))runVideo(activeURL);
+  else showImage(activeURL);
+};
+
+document.getElementById("useSample").onclick=()=>{
+  runVideo("./assets/sample-vehicle.mp4");
+  window.scrollTo({top:0,behavior:"smooth"});
 };
 </script></body></html>
