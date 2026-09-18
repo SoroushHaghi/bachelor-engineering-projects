@@ -120,7 +120,12 @@ function detectFrame(src,sw,sh){
   for(const q of boxes){let hit=null;for(const m of merged){const gap=10;if(q.x<m.x+m.w+gap&&q.x+q.w+gap>m.x&&q.y<m.y+m.h+gap&&q.y+q.h+gap>m.y){hit=m;break}}
     if(hit){const x1=Math.min(hit.x,q.x),y1=Math.min(hit.y,q.y),x2=Math.max(hit.x+hit.w,q.x+q.w),y2=Math.max(hit.y+hit.h,q.y+q.h);hit.x=x1;hit.y=y1;hit.w=x2-x1;hit.h=y2-y1}else merged.push({...q})
   }
-  // Original MATLAB ROI: lower half of the frame, drawn as a blue window.\n  const roiTop=Math.round(H/2);\n  b.strokeStyle="#1976d2";b.lineWidth=3;\n  b.strokeRect(2,roiTop,W-4,Math.max(2,H-roiTop-3));\n\n  b.strokeStyle="#00c853";b.lineWidth=3;b.font="bold 14px Arial";b.fillStyle="#00c853";
+  // Original MATLAB ROI: lower half of the frame, drawn as a blue window.
+  const roiTop=Math.round(H/2);
+  b.strokeStyle="#1976d2";b.lineWidth=3;
+  b.strokeRect(2,roiTop,W-4,Math.max(2,H-roiTop-3));
+
+  b.strokeStyle="#00c853";b.lineWidth=3;b.font="bold 14px Arial";b.fillStyle="#00c853";
   let count=0;
   for(const q of merged){if(q.w>210||q.h>150)continue;count++;b.strokeRect(q.x,q.y,q.w,q.h);b.fillText("vehicle",q.x+3,Math.max(14,q.y-4))}
   document.getElementById("stats").textContent="Value-histogram peak: "+stats.peak+" · Mean brightness: "+stats.mean.toFixed(1)+" · Candidate regions: "+count;
