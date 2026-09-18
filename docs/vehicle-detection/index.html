@@ -101,7 +101,11 @@ function detectFrame(src,sw,sh){
   if(!stats.night){
     if(!bg){bg=new Float32Array(g.length);for(let i=0;i<g.length;i++)bg[i]=g[i]}
     const diff=new Uint8Array(g.length);
-    for(let i=0;i<g.length;i++){diff[i]=Math.abs(g[i]-bg[i]);bg[i]=bg[i]*0.965+g[i]*0.035}
+    for(let i=0;i<g.length;i++){
+      const d=Math.abs(g[i]-bg[i]);
+      diff[i]=d;
+      if(d<20)bg[i]=bg[i]*0.99+g[i]*0.01;
+    }
     for(let cy=0;cy<gh;cy++)for(let cx=0;cx<gw;cx++){
       if(cy<gh*.32)continue;let hot=0,total=0;
       for(let yy=0;yy<cell;yy++)for(let xx=0;xx<cell;xx++){const x=cx*cell+xx,y=cy*cell+yy;if(x<DW&&y<DH){total++;if(diff[y*DW+x]>20)hot++}}
