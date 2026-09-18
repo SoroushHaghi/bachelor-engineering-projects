@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Stereo Sound Direction | Soroush Haghi</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f6f7f9;color:#171717;font-family:Arial,Helvetica,sans-serif}
+.wrap{max-width:980px;margin:auto;padding:36px 18px 52px}.top{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;margin-bottom:22px}
+h1{font-size:34px;margin:0 0 7px}.meta{color:#666}.source{color:#171717;text-decoration:none;border:1px solid #ccc;background:#fff;padding:9px 12px;border-radius:8px;font-size:13px}
+.panel{background:#fff;border:1px solid #ddd;border-radius:14px;padding:20px}.upload{display:inline-block;padding:10px 14px;border:1px solid #ccc;border-radius:9px;background:#fff;cursor:pointer}.upload input{display:none}
+.summary{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:18px 0}.card{border:1px solid #e1e1e1;border-radius:12px;padding:15px}.label{font-size:12px;color:#777;margin-bottom:6px}.value{font-size:24px;font-weight:700}
+canvas{width:100%;height:260px;border:1px solid #e1e1e1;border-radius:12px;background:#fff}.table{margin-top:16px;border:1px solid #e1e1e1;border-radius:12px;overflow:hidden}.row{display:grid;grid-template-columns:90px 1fr 1fr 100px;padding:9px 12px;border-bottom:1px solid #eee;font-size:13px}.row:last-child{border-bottom:0}.head{font-weight:700;background:#fafafa}
+.note{margin-top:14px;color:#666;font-size:13px;line-height:1.55}@media(max-width:720px){.top{flex-direction:column}.summary{grid-template-columns:1fr}.row{grid-template-columns:70px 1fr 1fr 80px;font-size:12px}}
+</style></head>
+<body><main class="wrap">
+<div class="top"><div><h1>Stereo Sound Direction</h1><div class="meta">MATLAB · Signal Processing · Stereo Audio</div></div>
+<a class="source" href="https://github.com/SoroushHaghi/bachelor-engineering-projects/tree/main/signal-processing/stereo-sound-direction">View source code</a></div>
+<section class="panel">
+<label class="upload">Upload stereo WAV<input id="file" type="file" accept=".wav,audio/wav"></label>
+<div class="summary"><div class="card"><div class="label">Selected window</div><div id="win" class="value">—</div></div><div class="card"><div class="label">Left RMS</div><div id="left" class="value">—</div></div><div class="card"><div class="label">Direction</div><div id="dir" class="value">—</div></div></div>
+<canvas id="chart" width="900" height="260"></canvas>
+<div id="table" class="table"><div class="row head"><div>Second</div><div>Left RMS</div><div>Right RMS</div><div>Direction</div></div></div>
+<div class="note">The browser demo follows the same core idea as the MATLAB source: split stereo audio into one-second windows, calculate RMS energy per channel, and classify the stronger side.</div>
+</section></main>
+<script>
+const file=document.getElementById("file"),table=document.getElementById("table"),canvas=document.getElementById("chart"),ctx=canvas.getContext("2d");
+let rows=[];
+function rms(a,start,end){let s=0,n=Math.max(1,end-start);for(let i=start;i<end;i++){const v=a[i]||0;s+=v*v}return Math.sqrt(s/n)}
+function draw(){
+ ctx.clearRect(0,0,canvas.width,canvas.height);ctx.strokeStyle="#ddd";ctx.beginPath();ctx.moveTo(40,220);ctx.lineTo(880,220);ctx.stroke();
+ if(!rows.length)return;
+ const max=Math.max(...rows.flatMap(r=>[r.l,r.r]),0.0001),w=800/rows.length;
+ rows.forEach((r,i)=>{const x=50+i*w,lh=170*r.l/max,rh=170*r.r/max;ctx.fillStyle="#333";ctx.fillRect(x,220-lh,Math.max(3,w*.28),lh);ctx.fillStyle="#aaa";ctx.fillRect(x+w*.34,220-rh,Math.max(3,w*.28),rh)});
+ ctx.fillStyle="#555";ctx.font="12px Arial";ctx.fillText("Dark = Left RMS   Light = Right RMS",50,245);
+}
+function renderTable(){
+ table.innerHTML='<div class="row head"><div>Second</div><div>Left RMS</div><div>Right RMS</div><div>Direction</div></div>';
+ rows.forEach((r,i)=>{const d=document.createElement("div");d.className="row";d.innerHTML='<div>'+(i+1)+'</div><div>'+r.l.toFixed(4)+'</div><div>'+r.r.toFixed(4)+'</div><div>'+r.dir+'</div>';d.onclick=()=>select(i);table.appendChild(d)});
+}
+function select(i){const r=rows[i];document.getElementById("win").textContent=(i+1)+" s";document.getElementById("left").textContent=r.l.toFixed(4);document.getElementById("dir").textContent=r.dir}
+file.onchange=async e=>{
+ const f=e.target.files[0];if(!f)return;
+ const buf=await f.arrayBuffer();const ac=new (window.AudioContext||window.webkitAudioContext)();const audio=await ac.decodeAudioData(buf);
+ if(audio.numberOfChannels<2){alert("Please upload a stereo WAV file.");return}
+ const L=audio.getChannelData(0),R=audio.getChannelData(1),fs=audio.sampleRate,n=Math.floor(audio.duration);
+ rows=[];
+ for(let i=0;i<n;i++){const a=i*fs,b=Math.min((i+1)*fs,L.length),l=rms(L,a,b),r=rms(R,a,b);rows.push({l,r,dir:l>r?"Left":"Right"})}
+ renderTable();draw();if(rows.length)select(0);ac.close();
+};
+</script></body></html>
