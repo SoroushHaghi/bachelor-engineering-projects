@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ATmega32 Digital Safe | Soroush Haghi</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f6f7f9;color:#171717;font-family:Arial,Helvetica,sans-serif}
+.wrap{max-width:900px;margin:auto;padding:36px 18px 52px}.top{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;margin-bottom:22px}
+h1{font-size:34px;margin:0 0 7px}.meta{color:#666}.source{color:#171717;text-decoration:none;border:1px solid #ccc;background:#fff;padding:9px 12px;border-radius:8px;font-size:13px}
+.panel{background:#fff;border:1px solid #ddd;border-radius:14px;padding:20px}.lcd{background:#dfe9cf;border:8px solid #333;color:#26351f;font-family:monospace;font-size:22px;min-height:92px;padding:16px;border-radius:8px;white-space:pre-line;margin-bottom:18px}
+.keypad{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;max-width:360px}.keypad button{font:inherit;font-size:18px;padding:15px;border:1px solid #ccc;background:#fff;border-radius:9px;cursor:pointer}
+.row{display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap}.status{padding:10px 12px;border:1px solid #ddd;border-radius:9px;background:#fafafa;font-size:13px}
+.note{margin-top:16px;color:#666;font-size:13px;line-height:1.55}@media(max-width:680px){.top{flex-direction:column}}
+</style>
+</head>
+<body><main class="wrap">
+<div class="top"><div><h1>ATmega32 Digital Safe</h1><div class="meta">Embedded C · ATmega32 · Matrix Keypad · LCD</div></div>
+<a class="source" href="https://github.com/SoroushHaghi/bachelor-engineering-projects/tree/main/embedded-systems/atmega32-digital-safe">View source code</a></div>
+<section class="panel">
+<div id="lcd" class="lcd">SET PASSWORD
+_ _ _ _</div>
+<div class="row">
+<div class="keypad" id="keypad"></div>
+<div><div id="state" class="status">State: setup</div><div style="height:8px"></div><button id="reset" style="padding:10px 14px;border:1px solid #ccc;background:white;border-radius:9px;cursor:pointer">Reset</button></div>
+</div>
+<div class="note">This page visualizes the intended keypad/password/LCD flow from the original C project. The original source remains linked above.</div>
+</section></main>
+<script>
+const lcd=document.getElementById("lcd"),state=document.getElementById("state"),pad=document.getElementById("keypad");
+let phase="setup",stored="",input="";
+["1","2","3","4","5","6","7","8","9","C","0","+"].forEach(k=>{const b=document.createElement("button");b.textContent=k;b.onclick=()=>press(k);pad.appendChild(b)});
+function show(msg){lcd.textContent=msg}
+function stars(){return (input+"____").slice(0,4).split("").join(" ")}
+function press(k){
+ if(k==="C"){
+   if(phase==="locked"){phase="enter";input="";show("ENTER PASSWORD\n_ _ _ _");state.textContent="State: enter password"}
+   else if(phase==="enter"){const ok=input===stored;phase=ok?"open":"locked";show(ok?"DOOR OPEN":"WRONG PASSWORD\nSAFE LOCKED");state.textContent="State: "+(ok?"open":"locked");input=""}
+   return;
+ }
+ if(k==="+"){
+   if(phase==="setup"&&input.length===4){stored=input;input="";phase="locked";show("PASSWORD SAVED\nPRESS C TO UNLOCK");state.textContent="State: locked"}
+   return;
+ }
+ if(/\d/.test(k)&&(phase==="setup"||phase==="enter")&&input.length<4){
+   input+=k;show((phase==="setup"?"SET PASSWORD":"ENTER PASSWORD")+"\n"+stars())
+ }
+}
+document.getElementById("reset").onclick=()=>{phase="setup";stored="";input="";show("SET PASSWORD\n_ _ _ _");state.textContent="State: setup"};
+</script></body></html>
