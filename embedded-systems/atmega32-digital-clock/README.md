@@ -2,19 +2,15 @@
 
 **Embedded C · ATmega32 · 7-Segment Display**
 
-## Academic context
-- Course: Microprocessors
-- Term 4001
-- Instructor: Dr. Mojtaba Asgari
+A microcontroller clock implemented in C with multiplexed 7-segment output, push-button time adjustment, rollover logic, and forward/reverse adjustment.
 
-## Project
-An ATmega32 digital-clock project with multiplexed 7-segment display control.
+[**Open Project Demo**](https://soroushhaghi.github.io/bachelor-engineering-projects/digital-clock/)
 
-## Implemented functions
-- Hours, minutes, and seconds display
-- Time adjustment through input buttons
+## What it demonstrates
+- Multiplexed 7-segment display control
+- Hours, minutes, and seconds rollover
+- Push-button adjustment
 - Forward/reverse adjustment logic
-- Multiplexed 7-segment output
 
 ## Source
 - [clock.c](src/clock.c)
