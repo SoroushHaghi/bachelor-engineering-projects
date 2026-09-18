@@ -37,7 +37,7 @@ canvas,video{width:100%;display:block;background:#eef0f3}.route{font-size:28px;f
 <div class="step"><b>4. Vehicle regions</b>Connected regions are filtered and displayed as candidate vehicle boxes inside the road ROI.</div>
 </div>
 
-<div class="muted" style="margin-top:16px">The browser preview is a lightweight client-side approximation for live presentation. The original MATLAB source contains the full GMM/morphology/component pipeline.</div>
+<div class="muted" style="margin-top:16px">The browser preview is a lightweight client-side approximation; adjacent vehicles may merge and some vehicles may be missed. The original MATLAB source contains the full GMM/morphology/component pipeline.</div>
 
 <div class="sample">
 <h2>Sample clip</h2>
@@ -57,11 +57,14 @@ canvas,video{width:100%;display:block;background:#eef0f3}.route{font-size:28px;f
 
 <script>
 const file=document.getElementById("file"),sample=document.getElementById("sample"),worker=document.getElementById("worker");
-const CLIP_START=9,CLIP_END=12,DETECT_WARMUP_START=6;
+const CLIP_START=9,CLIP_END=12,DETECT_WARMUP_START=0;
 const cin=document.getElementById("input"),cout=document.getElementById("processed"),work=document.getElementById("work");
 const a=cin.getContext("2d"),b=cout.getContext("2d"),wctx=work.getContext("2d",{willReadFrequently:true});
 
 let activeURL=null,runToken=0,timer=null,frameNo=0,tracked=[],warming=false;
+// Preview parameters selected on the bundled sample; not MATLAB toolbox defaults.
+const DAY={learningRate:.01,backgroundRatio:.5,minPixels:200,minWidth:24,minHeight:20,maxAspect:3};
+let runController=null;
 let mogMean=null,mogVar=null,mogWeight=null,mogPixels=0;
 
 function resetModel(){
@@ -69,6 +72,7 @@ function resetModel(){
 }
 function stopRun(){
   runToken++;
+  if(runController){runController.abort();runController=null;}
   if(timer){clearTimeout(timer);timer=null}
   worker.pause();worker.playbackRate=1;
   frameNo=0;tracked=[];warming=false;resetModel();
@@ -103,68 +107,21 @@ function initMog(g){
   }
 }
 function mogForeground(g,training){
-  if(!mogMean||mogPixels!==g.length)initMog(g);
-  const fg=new Uint8Array(g.length);
-  const alpha=training?0.045:0.004;
-  const rho=training?0.08:0.025;
-
-  for(let i=0;i<g.length;i++){
-    const base=i*3,v=g[i];
-    let match=-1,best=1e9;
-
-    for(let k=0;k<3;k++){
-      const p=base+k,w=mogWeight[p];
-      if(w<=0)continue;
-      const d=v-mogMean[p],d2=d*d;
-      if(d2<=6.25*mogVar[p]&&d2<best){best=d2;match=k}
-    }
-
-    for(let k=0;k<3;k++)mogWeight[base+k]*=(1-alpha);
-
-    if(match>=0){
-      const p=base+match,d=v-mogMean[p];
-      mogWeight[p]+=alpha;
-      mogMean[p]+=rho*d;
-      mogVar[p]=(1-rho)*mogVar[p]+rho*d*d;
-      if(mogVar[p]<36)mogVar[p]=36;
-      else if(mogVar[p]>900)mogVar[p]=900;
-    }else{
-      let r=base;
-      if(mogWeight[base+1]<mogWeight[r])r=base+1;
-      if(mogWeight[base+2]<mogWeight[r])r=base+2;
-      mogMean[r]=v;mogVar[r]=225;mogWeight[r]=alpha;
-      match=r-base;
-    }
-
-    const ws=mogWeight[base]+mogWeight[base+1]+mogWeight[base+2]||1;
-    mogWeight[base]/=ws;mogWeight[base+1]/=ws;mogWeight[base+2]/=ws;
-
-    let bg=0,bgScore=-1;
-    for(let k=0;k<3;k++){
-      const p=base+k;
-      const score=mogWeight[p]/Math.sqrt(Math.max(36,mogVar[p]));
-      if(score>bgScore){bgScore=score;bg=k}
-    }
-
-    if(!training){
-      const p=base+bg;
-      const d=Math.abs(v-mogMean[p]);
-      fg[i]=(match!==bg&&d>12)?1:0;
-    }
-  }
-  return fg;
-}
-function aggregateMask(pixelMask,pw,ph,cell){
-  const gw=Math.floor(pw/cell),gh=Math.floor(ph/cell),mask=new Uint8Array(gw*gh);
-  for(let cy=0;cy<gh;cy++)for(let cx=0;cx<gw;cx++){
-    let hot=0,total=0;
-    for(let yy=0;yy<cell;yy++)for(let xx=0;xx<cell;xx++){
-      const x=cx*cell+xx,y=cy*cell+yy;
-      if(x<pw&&y<ph){total++;hot+=pixelMask[y*pw+x]}
-    }
-    if(hot>=Math.max(2,Math.ceil(total*.16)))mask[cy*gw+cx]=1;
-  }
-  return {mask,gw,gh};
+ if(!mogMean||mogPixels!==g.length)initMog(g);
+ const fg=new Uint8Array(g.length),alpha=Math.max(DAY.learningRate,1/(frameNo+1));
+ for(let i=0;i<g.length;i++){
+  const base=i*3,v=g[i];let match=-1,best=Infinity;
+  const order=[0,1,2].sort((a,b)=>mogWeight[base+b]/Math.sqrt(mogVar[base+b])-mogWeight[base+a]/Math.sqrt(mogVar[base+a]));
+  for(let k=0;k<3;k++){const p=base+k,d=v-mogMean[p],nd=d*d/mogVar[p];if(mogWeight[p]>0&&nd<6.25&&nd<best){best=nd;match=k;}}
+  let weight=0,isBg=false;
+  for(const k of order){if(weight>=DAY.backgroundRatio)break; if(k===match)isBg=true;weight+=mogWeight[base+k];}
+  fg[i]=isBg?0:1;
+  for(let k=0;k<3;k++)mogWeight[base+k]*=1-alpha;
+  if(match<0){match=order[2];const p=base+match;mogMean[p]=v;mogVar[p]=225;mogWeight[p]=alpha;}
+  else {const p=base+match,d=v-mogMean[p];mogWeight[p]+=alpha;const rho=alpha/mogWeight[p];mogMean[p]+=rho*d;mogVar[p]=Math.max(36,Math.min(900,(1-rho)*mogVar[p]+rho*d*d));}
+  const sum=mogWeight[base]+mogWeight[base+1]+mogWeight[base+2];for(let k=0;k<3;k++)mogWeight[base+k]/=sum;
+ }
+ return fg;
 }
 function dilate(mask,w,h){
   const out=new Uint8Array(mask.length);
@@ -208,6 +165,27 @@ function cleanMask(mask,w,h){
     if(n<=1)denoised[i]=0;
   }
   return denoised;
+}
+function morph(mask,w,h,radius,dilation){
+ const out=new Uint8Array(mask.length), offsets=[];
+ for(let dy=-radius;dy<=radius;dy++)for(let dx=-radius;dx<=radius;dx++)if(dx*dx+dy*dy<=radius*radius)offsets.push([dx,dy]);
+ for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+  let on=dilation?0:1;
+  for(const [dx,dy] of offsets){const nx=x+dx,ny=y+dy;const value=nx>=0&&ny>=0&&nx<w&&ny<h?mask[ny*w+nx]:0;
+   if(dilation?value:!value){on=dilation?1:0;break;}}
+  out[y*w+x]=on;
+ }
+ return out;
+}
+function cleanDayMask(mask,w,h){
+ mask=morph(morph(mask,w,h,2,false),w,h,2,true); let out=morph(morph(mask,w,h,1,true),w,h,1,false);
+ const outside=new Uint8Array(out.length),queue=new Int32Array(out.length);let head=0,tail=0;
+ const add=(i)=>{if(!out[i]&&!outside[i]){outside[i]=1;queue[tail++]=i;}};
+ for(let x=0;x<w;x++){add(x);add((h-1)*w+x);}
+ for(let y=0;y<h;y++){add(y*w);add(y*w+w-1);}
+ while(head<tail){const i=queue[head++],x=i%w,y=(i/w)|0;if(x>0)add(i-1);if(x<w-1)add(i+1);if(y>0)add(i-w);if(y<h-1)add(i+w);}
+ for(let i=0;i<out.length;i++)if(!outside[i])out[i]=1;
+ return morph(morph(out,w,h,2,false),w,h,2,true);
 }
 function connectedBoxes(mask,gw,gh,cell,scaleX,scaleY,minCells){
   const seen=new Uint8Array(mask.length),boxes=[];
@@ -264,9 +242,7 @@ function stabilizeBoxes(boxes){
       used.add(best);
     }else next.push({...q,age:0});
   }
-  for(let i=0;i<tracked.length;i++){
-    if(!used.has(i)&&tracked[i].age<1)next.push({...tracked[i],age:tracked[i].age+1});
-  }
+  // Do not retain an unmatched box over empty asphalt or across a seek.
   tracked=next;
   return next;
 }
@@ -290,13 +266,12 @@ function detectFrame(src,sw,sh,training=false){
   a.drawImage(src,0,0,W,H);b.drawImage(src,0,0,W,H);
   document.getElementById("route").textContent=stats.night?"Nighttime branch":"Daytime branch";
 
-  const cell=4;
+  const cell=stats.night?4:1;
   let mask,gw,gh;
 
   if(!stats.night){
     const pixelFg=mogForeground(g,false);
-    const agg=aggregateMask(pixelFg,DW,DH,cell);
-    mask=cleanMask(agg.mask,agg.gw,agg.gh);gw=agg.gw;gh=agg.gh;
+    mask=cleanDayMask(pixelFg,DW,DH);gw=DW;gh=DH;
   }else{
     gw=Math.floor(DW/cell);gh=Math.floor(DH/cell);mask=new Uint8Array(gw*gh);
     for(let cy=0;cy<gh;cy++)for(let cx=0;cx<gw;cx++){
@@ -318,7 +293,8 @@ function detectFrame(src,sw,sh,training=false){
     q.density>0.40 &&
     q.cy>roiTop &&
     q.w>=12 && q.h>=8 &&
-    q.w<=230 && q.h<=165
+    q.w<=230 && q.h<=165 &&
+    (stats.night||(q.cells>=DAY.minPixels && q.w>=DAY.minWidth && q.h>=DAY.minHeight && q.w/q.h<=DAY.maxAspect))
   );
 
   b.strokeStyle="#1976d2";b.lineWidth=3;
@@ -337,35 +313,74 @@ function detectFrame(src,sw,sh,training=false){
     " · Candidate regions: "+visible.length;
   frameNo++;
 }
-function runVideo(url,clipStart=null,clipEnd=null,warmupStart=null){
+function waitVideoEvent(name,signal,action){
+  return new Promise((resolve,reject)=>{
+    const cleanup=()=>{worker.removeEventListener(name,done);worker.removeEventListener("error",failed);signal.removeEventListener("abort",aborted);clearTimeout(timeout);};
+    const done=()=>{cleanup();resolve();};
+    const failed=()=>{cleanup();reject(new Error("The video could not be decoded."));};
+    const aborted=()=>{cleanup();reject(new DOMException("Cancelled","AbortError"));};
+    const timeout=setTimeout(()=>{cleanup();reject(new Error("Video loading timed out. Please try again."));},15000);
+    worker.addEventListener(name,done,{once:true});worker.addEventListener("error",failed,{once:true});signal.addEventListener("abort",aborted,{once:true});
+    if(signal.aborted){aborted();return;}
+    try{action();}catch(error){cleanup();reject(error);}
+  });
+}
+async function seekVideo(time,signal){
+  if(Math.abs(worker.currentTime-time)<.0001&&worker.readyState>=2&&!worker.seeking)return;
+  await waitVideoEvent("seeked",signal,()=>{worker.currentTime=time;});
+}
+async function runVideo(url,clipStart=null,clipEnd=null,warmupStart=null){
   stopRun();
   const myToken=runToken;
-  worker.src=url;worker.load();
-
-  worker.onloadedmetadata=()=>{
-    warming=warmupStart!==null&&clipStart!==null&&warmupStart<clipStart;
-    worker.currentTime=warming?warmupStart:(clipStart!==null?clipStart:0);
-    worker.playbackRate=warming?4:1;
-  };
-  worker.onloadeddata=async()=>{
-    try{await worker.play()}catch(_){}
-    const tick=()=>{
-      if(myToken!==runToken)return;
-
-      if(warming&&clipStart!==null&&worker.currentTime>=clipStart){
-        warming=false;worker.playbackRate=1;worker.currentTime=clipStart;tracked=[];
-        timer=setTimeout(tick,100);return;
+  runController=new AbortController();const signal=runController.signal;
+  worker.onloadedmetadata=null;worker.onloadeddata=null;
+  worker.loop=clipEnd===null;
+  const status=document.getElementById("stats");
+  try{
+    status.textContent="Loading video…";
+    await waitVideoEvent("loadeddata",signal,()=>{worker.src=url;worker.load();});
+    let baseline=null;
+    if(warmupStart!==null&&clipStart!==null&&warmupStart<clipStart){
+      warming=true;
+      const count=Math.ceil((clipStart-warmupStart)*10);
+      // Decode 10 distinct frames per source second. Playback at 4x with a wall-clock
+      // timer skipped training frames and made the model dependent on machine speed.
+      for(let i=0;i<count;i++){
+        await seekVideo(warmupStart+i/10,signal);
+        if(myToken!==runToken)return;
+        detectFrame(worker,worker.videoWidth,worker.videoHeight,true);
+        status.textContent="Preparing sample background: "+Math.round((i+1)*100/count)+"%";
       }
-      if(clipEnd!==null&&!warming&&worker.currentTime>=clipEnd){
-        worker.currentTime=clipStart;tracked=[];
-        timer=setTimeout(tick,120);return;
-      }
-
-      if(worker.readyState>=2)detectFrame(worker,worker.videoWidth,worker.videoHeight,warming);
-      timer=setTimeout(tick,warming?35:100);
+      baseline={mean:mogMean?.slice(),variance:mogVar?.slice(),weight:mogWeight?.slice(),pixels:mogPixels,frames:frameNo};
+      warming=false;
+    }
+    await seekVideo(clipStart??0,signal);
+    let lastTime=-1;
+    const restore=()=>{
+      tracked=[];
+      if(baseline){mogMean=baseline.mean?.slice()??null;mogVar=baseline.variance?.slice()??null;mogWeight=baseline.weight?.slice()??null;mogPixels=baseline.pixels;frameNo=baseline.frames;}
+      else{resetModel();frameNo=0;}
     };
-    tick();
-  };
+    const tick=async()=>{
+      if(myToken!==runToken||signal.aborted)return;
+      try{
+        if(clipEnd!==null&&worker.currentTime>=clipEnd){
+          worker.pause();restore();await seekVideo(clipStart,signal);
+          if(myToken!==runToken)return;
+          lastTime=-1;await worker.play();
+        }
+        if(worker.currentTime<lastTime){restore();lastTime=-1;}
+        // Avoid learning repeatedly from the same decoded frame or during a seek.
+        if(!worker.seeking&&worker.readyState>=2&&(lastTime<0||worker.currentTime-lastTime>=.095)){
+          detectFrame(worker,worker.videoWidth,worker.videoHeight);lastTime=worker.currentTime;
+        }
+        if(myToken===runToken)timer=setTimeout(tick,20);
+      }catch(error){if(myToken===runToken&&error.name!=="AbortError")status.textContent=error.message;}
+    };
+    await worker.play();tick();
+  }catch(error){
+    if(myToken===runToken&&error.name!=="AbortError")status.textContent=error.message;
+  }
 }
 function showImage(url){
   stopRun();
