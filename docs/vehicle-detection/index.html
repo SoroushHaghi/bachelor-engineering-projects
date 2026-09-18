@@ -92,12 +92,9 @@ function connectedBoxes(mask,gw,gh,cell,scaleX,scaleY,minCells){
 function detectFrame(src,sw,sh){
   if(!sw||!sh)return;
   const W=592,H=Math.round(W*sh/sw),DW=296,DH=Math.round(DW*sh/sw);
-  const roiY=Math.round(H/2);
+  const roiTop=Math.round(H/2);
   cin.width=W;cin.height=H;cout.width=W;cout.height=H;work.width=DW;work.height=DH;
   a.drawImage(src,0,0,W,H);b.drawImage(src,0,0,W,H);wctx.drawImage(src,0,0,DW,DH);
-  // Keep the original MATLAB road ROI visible: lower half of the frame.
-  b.strokeStyle="#1976d2";b.lineWidth=3;
-  b.strokeRect(2,roiY,W-4,Math.max(2,H-roiY-3));
   const pix=wctx.getImageData(0,0,DW,DH).data,stats=sceneStats(pix),g=grayData(pix);
   document.getElementById("route").textContent=stats.night?"Nighttime branch":"Daytime branch";
   const cell=6,gw=Math.floor(DW/cell),gh=Math.floor(DH/cell),mask=new Uint8Array(gw*gh);
@@ -118,14 +115,13 @@ function detectFrame(src,sw,sh){
     }
   }
   let boxes=connectedBoxes(mask,gw,gh,cell,W/DW,H/DH,stats.night?1:2);
-  boxes=boxes.filter(q=>q.w>=16&&q.h>=12&&q.w<=190&&q.h<=130&&(q.y+q.h/2)>roiY);
+  boxes=boxes.filter(q=>q.w>=16&&q.h>=12&&q.w<=190&&q.h<=130&&(q.y+q.h/2)>roiTop);
   // Merge strongly overlapping/touching regions.
   const merged=[];
   for(const q of boxes){let hit=null;for(const m of merged){const gap=10;if(q.x<m.x+m.w+gap&&q.x+q.w+gap>m.x&&q.y<m.y+m.h+gap&&q.y+q.h+gap>m.y){hit=m;break}}
     if(hit){const x1=Math.min(hit.x,q.x),y1=Math.min(hit.y,q.y),x2=Math.max(hit.x+hit.w,q.x+q.w),y2=Math.max(hit.y+hit.h,q.y+q.h);hit.x=x1;hit.y=y1;hit.w=x2-x1;hit.h=y2-y1}else merged.push({...q})
   }
   // Original MATLAB ROI: lower half of the frame, drawn as a blue window.
-  const roiTop=Math.round(H/2);
   b.strokeStyle="#1976d2";b.lineWidth=3;
   b.strokeRect(2,roiTop,W-4,Math.max(2,H-roiTop-3));
 
